@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 func main() {
@@ -30,7 +33,7 @@ func main() {
 		}(ctx)
 	}
 
-	Process()
+	Process1()
 
 	for {
 		time.Sleep(time.Second * 5)
@@ -72,6 +75,60 @@ func Process() {
 					trContext, _ = tr.Start(context.Background(), "Process-Handler-ID-"+fmt.Sprint(index))
 					tr = otel.Tracer("Process-Handler-ID-" + fmt.Sprint(index))
 				}
+			}
+		}(i)
+	}
+}
+
+func Process1() {
+	mine := func(ctx context.Context, wg *sync.WaitGroup, productID int) {
+		defer wg.Done()
+
+		tr := otel.Tracer("Miner")
+
+		newCtx, span := tr.Start(ctx, "ProductID-"+fmt.Sprint(productID))
+		defer span.End()
+
+		//Her i farkli bir methodu tanimlar.
+		for i := 0; i < 5; i++ { // 5 adet farkli islemi var diyelim
+			func() { //Defer icin eklendi
+				_, span := tr.Start(newCtx, "ProcessID:"+fmt.Sprint(i))
+				defer span.End()
+
+				time.Sleep(time.Duration(rand.Intn(10)) * time.Second) //Islem suresi
+
+				if rand.Intn(50) > 25 { //Islem basarisiz.
+					err := errors.New("random value 25 uzeri geldigi icin islem basarisiz sayildi.")
+					span.RecordError(err)
+					span.SetStatus(codes.Error, err.Error())
+					return
+				}
+
+				// Islem basarili
+				if i == 4 {
+					priceList := []int{rand.Intn(55), rand.Intn(55), rand.Intn(55), rand.Intn(55), rand.Intn(55)}
+					span.SetAttributes(attribute.IntSlice("miner.getPriceList", priceList))
+				} else {
+					span.SetAttributes(attribute.String("miner.ProcessID_"+fmt.Sprint(i)+".Count", fmt.Sprint(rand.Intn(55))))
+				}
+			}()
+		}
+	}
+
+	for i := 0; i < 5; i++ {
+		go func(index int) {
+			for {
+				tr := otel.Tracer("Miner")
+				trContext, mainSpan := tr.Start(context.Background(), "Miner-ScanPackageID-"+fmt.Sprint(index))
+				wg := sync.WaitGroup{}
+
+				for i2 := 0; i2 < 10; i2++ {
+					wg.Add(1)
+					go mine(trContext, &wg, i2)
+				}
+
+				wg.Wait()
+				mainSpan.End()
 			}
 		}(i)
 	}
